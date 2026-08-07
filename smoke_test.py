@@ -102,7 +102,7 @@ def dry_run_mode():
     print("=== DRY RUN MODE (no LLM call) ===")
     print("Simulating model output and running schema validation...\n")
 
-    from agent import _validate_and_coerce, VALID_CATEGORIES
+    from agent import _validate_and_coerce
 
     # Simulate a realistic model JSON output (as Claude/Gemini would return)
     simulated_model_output = {

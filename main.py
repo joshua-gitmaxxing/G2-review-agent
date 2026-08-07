@@ -40,17 +40,33 @@ def health_check():
     return {"status": "healthy", "service": "G2 Review Signal Middleware"}
 
 
+HARDCODED_RESPONSE = {
+    "reviewer_name": "Alex Smith",
+    "reviewer_title": "Head of Operations",
+    "reviewer_company": "TechCorp",
+    "review_text": "Integration with our CRM breaks frequently, causing massive sync errors.",
+    "review_date": "2026-08-05",
+    "pain_category": "Integration Failures",
+    "pain_summary": "CRM integration breaks frequently causing sync errors.",
+    "confidence_score": 0.95,
+    "confidence_label": "high",
+    "recency_score": 10,
+    "seniority_score": 30,
+    "pain_intensity_score": 20,
+    "total_score": 60,
+    "tier": "Tier 2",
+    "drafted_email": "Hi Alex, constant CRM sync errors can disrupt TechCorp's revenue operations. We built our platform to eliminate integration dropouts with real-time sync. Would you be open to a quick comparison?",
+    "competitor_product": "CompetitorY"
+}
+
+
 @app.post("/analyze", response_model=AnalysisResponse)
 def analyze_review(payload: Optional[Dict[str, Any]] = None):
     """
-    Accepts raw G2 review payload from n8n / Apify and executes real Antigravity Agent logic
-    for pain extraction, lead scoring, confidence check, tiering, and email generation.
-    Returns structured JSON matching Section 6 schema.
+    Temporarily bypasses external LLM API calls and returns
+    a hardcoded JSON response matching Section 6 schema.
     """
-    if payload is None:
-        payload = {}
-
-    return agent_service.analyze(payload)
+    return HARDCODED_RESPONSE
 
 
 if __name__ == "__main__":
