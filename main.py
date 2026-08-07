@@ -1,3 +1,7 @@
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional, Any, Dict

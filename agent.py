@@ -1,28 +1,382 @@
-import os
-import json
-from datetime import datetime, date
-from typing import Dict, Any, Tuple
+"""
+G2 Review Signal Agent — Gemini Flash via google-genai SDK.
 
-CATEGORIES = [
-    "Onboarding Friction",
-    "Poor Customer Support",
-    "Integration Failures",
-    "Pricing / Value Mismatch",
-    "Performance / Reliability Issues",
-    "Missing Features",
-    "Steep Learning Curve",
-    "Poor Reporting / Analytics",
-    "Clunky UI / UX",
-    "Lack of Scalability",
-    "Other",
-]
+This module implements the Antigravity agent reasoning layer described in the
+G2 Review Signal Workflow Build Brief (Section 5 Stages 2, 3, 7 and Section 8).
+
+All reasoning is delegated to the LLM via the google-genai SDK:
+  Stage 2 — Pain extraction, pain category classification, pain summary, confidence scoring
+  Stage 3 — Lead scoring across all three dimensions (recency, seniority, pain intensity),
+             total score calculation, tier assignment
+  Stage 7 — Personalized outreach email drafting
+
+To swap to Claude Sonnet 4.6 once ANTHROPIC_API_KEY is available:
+  1. Set MODEL_BACKEND = 'anthropic' at the top of this file
+  2. Set ANTHROPIC_API_KEY in your .env file
+  That is the only change required.
+
+The scoring rubrics and hard constraints from Section 5 are enforced entirely
+in the system prompt. Python post-processing only validates types, enforces
+numeric bounds, and recomputes totals to guarantee schema integrity.
+
+Output always conforms to the 16-field JSON schema in Section 6.
+"""
+
+import json
+import os
+import re
+from datetime import datetime
+from typing import Any, Dict
+
+from dotenv import load_dotenv
+import google.genai as genai
+
+load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Backend selector — change to 'anthropic' when ANTHROPIC_API_KEY is ready
+# ---------------------------------------------------------------------------
+MODEL_BACKEND: str = "gemini"  # 'gemini' | 'anthropic'
+GEMINI_MODEL: str = "gemini-2.0-flash"   # fast, accurate, free-tier eligible
+CLAUDE_MODEL: str = "claude-sonnet-4-5"  # swap target when key is available
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ALL reasoning logic, scoring rubrics, and hard rules live here — not in Python
+# ---------------------------------------------------------------------------
+SYSTEM_PROMPT = """You are a competitive displacement analyst for a B2B SaaS company.
+
+You will receive structured data about a G2 review of a competitor product.
+Your job is to perform three tasks and return a single, strictly-formatted JSON object.
+You must return ONLY the JSON object — no markdown, no explanation, no extra text.
+
+---
+
+TASK 1 — PAIN EXTRACTION (Stage 2)
+
+Read the review text carefully and determine:
+
+pain_category: Classify the review into EXACTLY ONE of these categories:
+  - Onboarding Friction
+  - Poor Customer Support
+  - Integration Failures
+  - Pricing / Value Mismatch
+  - Performance / Reliability Issues
+  - Missing Features
+  - Steep Learning Curve
+  - Poor Reporting / Analytics
+  - Clunky UI / UX
+  - Lack of Scalability
+  - Other  (use ONLY if the review genuinely does not map to any category above)
+
+pain_summary: Write 1–2 plain English sentences describing the reviewer's core problem.
+  This appears in a Slack notification read by a human — keep it readable and specific.
+  Do NOT use vague language. Do NOT copy-paste the review verbatim.
+
+confidence_score: A float between 0.0 and 1.0 representing how clearly the review
+  maps to a single pain category.
+  Scoring guide:
+    0.85–1.00: The pain category is unmistakably obvious from the review text
+    0.70–0.84: Strong signal with minor ambiguity
+    0.50–0.69: Review is vague, mixed, or required significant interpretation
+    Below 0.50: Review gives very little actionable signal
+
+confidence_label: "high" if confidence_score >= 0.70, otherwise "low".
+  These are the ONLY two allowed values. No other strings are valid.
+
+---
+
+TASK 2 — LEAD SCORING (Stage 3)
+
+Apply the EXACT rubrics below. Do not estimate. Do not round differently.
+
+RECENCY SCORE (max 30 points)
+Compare the review_date to today's date (provided in the user message).
+  - Posted within the last 7 days → 30
+  - Posted 8–30 days ago → 20
+  - Posted 31–90 days ago → 10
+  - Posted more than 90 days ago → 0
+  - Date is missing or cannot be parsed → assign 10
+
+SENIORITY SCORE (max 40 points)
+Evaluate the reviewer_title field:
+  - CEO, CTO, CFO, COO, CRO, CMO, Chief [anything], VP, Vice President,
+    Owner, Founder, President → 40
+  - Director, Head of [anything], Principal → 30
+  - Manager, Supervisor → 20
+  - Any other clearly named individual contributor role → 10
+  - Title is blank, missing, or "Unknown" → 5
+
+PAIN INTENSITY SCORE (max 30 points)
+Evaluate the emotional signal and urgency in the review text:
+  - Reviewer explicitly mentions switching, cancelling, leaving, or uses words
+    like "terrible", "worst", "nightmare", "unusable", "frustrated", "fed up",
+    "wasted", "disaster" → 30
+  - Reviewer makes a clear, specific criticism of a named feature, process, or
+    outcome without extreme emotional language → 20
+  - Reviewer expresses mild dissatisfaction or a mixed positive/negative review → 10
+  - Review is mostly positive with only a minor complaint → 0
+
+total_score = recency_score + seniority_score + pain_intensity_score
+This must be an integer between 0 and 100.
+
+tier assignment (based on total_score):
+  - 70–100 → "Tier 1"
+  - 40–69  → "Tier 2"
+  - Below 40 → "Discard"
+
+---
+
+TASK 3 — OUTREACH EMAIL DRAFTING (Stage 7)
+
+Draft a short, personalized outreach email following ALL of these rules:
+
+HARD RULES (every single one is non-negotiable):
+  1. NEVER reference G2, any review site, or imply you found the person through a review
+  2. NEVER say anything like "noticed your review" or "saw your feedback"
+  3. Open with the implied pain as the hook — not a generic opener
+  4. Tone: direct, peer-to-peer. Not salesy. Not pushy.
+  5. Length: STRICTLY under 100 words — count carefully before finalizing
+  6. Do NOT include a subject line — email body only
+  7. Address the reviewer by first name only (extract from reviewer_name field)
+  8. Reference their company name naturally in the opening line
+  9. Each pain category must produce a meaningfully different email:
+     - Different opening hook
+     - Different value proposition
+     - Different call to action
+     This differentiation is the most important demo moment in this workflow.
+
+---
+
+OUTPUT — CRITICAL FORMATTING RULE
+
+Return ONLY a raw JSON object. The response must:
+  - Start with {
+  - End with }
+  - Contain no markdown, no code fences, no explanation, no preamble
+
+Required fields (exactly these 16):
+
+{
+  "reviewer_name": "<pass through unchanged from input>",
+  "reviewer_title": "<pass through unchanged from input>",
+  "reviewer_company": "<pass through unchanged from input>",
+  "review_text": "<pass through unchanged from input>",
+  "review_date": "<pass through unchanged from input, YYYY-MM-DD format>",
+  "pain_category": "<exactly one of the 11 categories listed above>",
+  "pain_summary": "<1–2 sentence plain English pain summary>",
+  "confidence_score": <float 0.0–1.0, two decimal places>,
+  "confidence_label": "<'high' or 'low' — no other values permitted>",
+  "recency_score": <integer — must be one of: 0, 10, 20, 30>,
+  "seniority_score": <integer — must be one of: 5, 10, 20, 30, 40>,
+  "pain_intensity_score": <integer — must be one of: 0, 10, 20, 30>,
+  "total_score": <integer 0–100, must equal the exact sum of the three scores above>,
+  "tier": "<'Tier 1', 'Tier 2', or 'Discard' — no other values permitted>",
+  "drafted_email": "<email body only, under 100 words, no subject line>",
+  "competitor_product": "<pass through unchanged from input>"
+}"""
+
+
+def _build_user_message(
+    reviewer_name: str,
+    reviewer_title: str,
+    reviewer_company: str,
+    review_text: str,
+    review_date: str,
+    competitor_product: str,
+) -> str:
+    today = datetime.now().strftime("%Y-%m-%d")
+    return (
+        f"Today's date: {today}\n\n"
+        "Analyze the following G2 review and return the JSON object per your instructions.\n\n"
+        "---\n"
+        f"Reviewer Name: {reviewer_name}\n"
+        f"Reviewer Title: {reviewer_title}\n"
+        f"Reviewer Company: {reviewer_company}\n"
+        f"Review Date: {review_date if review_date else 'Not provided'}\n"
+        f"Competitor Product: {competitor_product}\n\n"
+        f"Review Text:\n{review_text if review_text else 'No review text provided.'}\n"
+        "---\n\n"
+        "Return only the JSON object. Nothing else."
+    )
+
+
+def _extract_json(raw_text: str) -> Dict[str, Any]:
+    """
+    Extracts and parses the JSON object from the model's raw text response.
+    Handles markdown code fences if the model wraps its output.
+    """
+    cleaned = raw_text.strip()
+
+    # Strip markdown code fences if present
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}") + 1
+    if start == -1 or end == 0:
+        raise ValueError(
+            f"No JSON object found in model response. "
+            f"Raw output (first 400 chars): {raw_text[:400]}"
+        )
+
+    return json.loads(cleaned[start:end])
+
+
+def _validate_and_coerce(data: Dict[str, Any], fallback: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Validates parsed model output and coerces types to match the Section 6 schema exactly.
+    Pass-through fields are restored from original input if the model blanked them.
+    total_score and tier are always recomputed from parts for integrity.
+    """
+    valid_categories = {
+        "Onboarding Friction", "Poor Customer Support", "Integration Failures",
+        "Pricing / Value Mismatch", "Performance / Reliability Issues", "Missing Features",
+        "Steep Learning Curve", "Poor Reporting / Analytics", "Clunky UI / UX",
+        "Lack of Scalability", "Other",
+    }
+
+    # Restore pass-through fields from original input
+    for field in ("reviewer_name", "reviewer_title", "reviewer_company",
+                  "review_text", "review_date", "competitor_product"):
+        if not data.get(field):
+            data[field] = fallback.get(field, "")
+
+    # confidence_score — coerce to float, clamp to [0.0, 1.0]
+    try:
+        cs = float(data.get("confidence_score", 0.6))
+        cs = max(0.0, min(1.0, round(cs, 2)))
+    except (TypeError, ValueError):
+        cs = 0.60
+    data["confidence_score"] = cs
+
+    # confidence_label — always derived from score; never trusted from model
+    data["confidence_label"] = "high" if cs >= 0.70 else "low"
+
+    # pain_category — validate against allowed set
+    if data.get("pain_category") not in valid_categories:
+        data["pain_category"] = "Other"
+
+    # Integer scores — validate against allowed value sets
+    def coerce_score(val: Any, allowed: set, default: int) -> int:
+        try:
+            v = int(val)
+            return v if v in allowed else default
+        except (TypeError, ValueError):
+            return default
+
+    data["recency_score"] = coerce_score(
+        data.get("recency_score"), {0, 10, 20, 30}, 10
+    )
+    data["seniority_score"] = coerce_score(
+        data.get("seniority_score"), {5, 10, 20, 30, 40}, 10
+    )
+    data["pain_intensity_score"] = coerce_score(
+        data.get("pain_intensity_score"), {0, 10, 20, 30}, 10
+    )
+
+    # Recompute total_score and tier from parts — never trust model arithmetic
+    total = (
+        data["recency_score"]
+        + data["seniority_score"]
+        + data["pain_intensity_score"]
+    )
+    total = max(0, min(100, total))
+    data["total_score"] = total
+
+    if total >= 70:
+        data["tier"] = "Tier 1"
+    elif total >= 40:
+        data["tier"] = "Tier 2"
+    else:
+        data["tier"] = "Discard"
+
+    # pain_summary fallback
+    if not data.get("pain_summary"):
+        data["pain_summary"] = (
+            f"Reviewer reported issues related to {data['pain_category'].lower()}."
+        )
+
+    # drafted_email fallback
+    if not data.get("drafted_email"):
+        first = (
+            data["reviewer_name"].split()[0]
+            if data.get("reviewer_name")
+            else "there"
+        )
+        data["drafted_email"] = (
+            f"Hi {first}, teams at {data['reviewer_company']} dealing with "
+            f"{data['pain_category'].lower()} often look for a better alternative. "
+            "Worth a quick conversation?"
+        )
+
+    return data
+
+
+def _call_gemini(user_message: str) -> str:
+    """
+    Calls Gemini via the google-genai SDK. Requires GEMINI_API_KEY in .env.
+    """
+    load_dotenv(override=True)
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise EnvironmentError(
+            "GEMINI_API_KEY is not set or empty in .env. Please paste your Gemini API key in .env."
+        )
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=user_message,
+        config=genai.types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0.2,
+            max_output_tokens=2048,
+        ),
+    )
+    return response.text
+
+
+def _call_anthropic(user_message: str) -> str:
+    """
+    Calls Claude Sonnet 4.6 via the Anthropic SDK. Requires ANTHROPIC_API_KEY in .env.
+    Activate by setting MODEL_BACKEND = 'anthropic' at the top of this file.
+    """
+    import anthropic
+    load_dotenv(override=True)
+    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise EnvironmentError(
+            "ANTHROPIC_API_KEY is not set or empty in .env. Please paste your Anthropic API key in .env."
+        )
+    client = anthropic.Anthropic(api_key=api_key)
+    message = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=2048,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return message.content[0].text
+
+
+def _call_llm(user_message: str) -> str:
+    """Dispatches to the configured LLM backend."""
+    if MODEL_BACKEND == "anthropic":
+        return _call_anthropic(user_message)
+    return _call_gemini(user_message)
 
 
 class AntigravityReviewAgent:
     """
-    Antigravity Reasoning Agent for G2 Review Signal Processing.
-    Handles Stage 2 (Pain Extraction & Confidence), Stage 3 (Lead Scoring & Tiering),
-    and Stage 7 (Campaign Outreach Generation).
+    G2 Review Signal Agent.
+
+    Currently powered by Gemini Flash via google-genai SDK.
+    Switch to Claude Sonnet 4.6 by setting MODEL_BACKEND = 'anthropic'
+    and adding ANTHROPIC_API_KEY to .env — no other code changes needed.
+
+    The system prompt encodes all scoring rubrics, constraints, and output
+    schema requirements from Section 5 (Stages 2, 3, 7) of the build brief.
+    Python logic only handles type coercion and schema integrity.
     """
 
     def analyze(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -31,218 +385,26 @@ class AntigravityReviewAgent:
         reviewer_company = str(payload.get("reviewer_company") or "Unknown Company").strip()
         review_text = str(payload.get("review_text") or "").strip()
         review_date = str(payload.get("review_date") or "").strip()
-        competitor_product = str(payload.get("competitor_product") or "Competitor Product").strip()
+        competitor_product = str(
+            payload.get("competitor_product") or "Competitor Product"
+        ).strip()
 
-        # If LLM API Key is set, attempt LLM call; fallback to local agent engine
-        llm_result = self._try_llm_inference(
-            reviewer_name, reviewer_title, reviewer_company, review_text, review_date, competitor_product
-        )
-        if llm_result:
-            return llm_result
-
-        # Stage 2: Pain Extraction & Confidence
-        pain_category, pain_summary, confidence_score = self._extract_pain(review_text)
-        confidence_label = "high" if confidence_score >= 0.70 else "low"
-
-        # Stage 3: Lead Scoring & Tiering
-        recency_score = self._score_recency(review_date)
-        seniority_score = self._score_seniority(reviewer_title)
-        pain_intensity_score = self._score_pain_intensity(review_text)
-
-        total_score = recency_score + seniority_score + pain_intensity_score
-
-        if total_score >= 70:
-            tier = "Tier 1"
-        elif total_score >= 40:
-            tier = "Tier 2"
-        else:
-            tier = "Discard"
-
-        # Stage 7: Campaign Generation
-        first_name = reviewer_name.split()[0] if reviewer_name else "there"
-        drafted_email = self._generate_email(
-            first_name=first_name,
-            company=reviewer_company,
-            pain_category=pain_category,
-            pain_summary=pain_summary,
-            competitor_product=competitor_product,
-        )
-
-        return {
+        fallback = {
             "reviewer_name": reviewer_name,
             "reviewer_title": reviewer_title,
             "reviewer_company": reviewer_company,
             "review_text": review_text,
             "review_date": review_date or datetime.now().strftime("%Y-%m-%d"),
-            "pain_category": pain_category,
-            "pain_summary": pain_summary,
-            "confidence_score": round(confidence_score, 2),
-            "confidence_label": confidence_label,
-            "recency_score": recency_score,
-            "seniority_score": seniority_score,
-            "pain_intensity_score": pain_intensity_score,
-            "total_score": total_score,
-            "tier": tier,
-            "drafted_email": drafted_email,
             "competitor_product": competitor_product,
         }
 
-    def _extract_pain(self, review_text: str) -> Tuple[str, str, float]:
-        text_lower = review_text.lower()
-        if not text_lower:
-            return "Other", "No detailed review text provided.", 0.50
-
-        category_matches = {
-            "Performance / Reliability Issues": ["crash", "down", "bug", "error", "slow", "latency", "unstable", "outage", "freeze"],
-            "Integration Failures": ["integration", "api", "sync", "connector", "webhook", "crm", "zapier"],
-            "Poor Customer Support": ["support", "ticket", "response time", "helpdesk", "customer service", "agent", "unresponsive"],
-            "Pricing / Value Mismatch": ["price", "expensive", "cost", "subscription", "hidden fee", "billing", "renew"],
-            "Onboarding Friction": ["onboard", "setup", "implementation", "kickoff", "getting started"],
-            "Missing Features": ["missing", "wish", "feature request", "lack", "doesn't support", "cannot"],
-            "Steep Learning Curve": ["learning curve", "complex", "confusing", "hard to learn", "documentation"],
-            "Poor Reporting / Analytics": ["report", "analytics", "dashboard", "export", "metric", "insight"],
-            "Clunky UI / UX": ["ui", "ux", "interface", "clunky", "outdated", "navigation"],
-            "Lack of Scalability": ["scale", "enterprise", "volume", "limit", "capacity"],
-        }
-
-        matched_cat = "Other"
-        max_hits = 0
-        for cat, keywords in category_matches.items():
-            hits = sum(1 for kw in keywords if kw in text_lower)
-            if hits > max_hits:
-                max_hits = hits
-                matched_cat = cat
-
-        if matched_cat != "Other" and max_hits >= 2:
-            confidence = 0.85
-        elif matched_cat != "Other" and max_hits == 1:
-            confidence = 0.72
-        else:
-            confidence = 0.55
-
-        # Format summary
-        summary = f"Reviewer expressed friction related to {matched_cat.lower()}."
-        if "crash" in text_lower or "sync" in text_lower or "support" in text_lower:
-            summary = review_text[:120].strip() + ("..." if len(review_text) > 120 else "")
-
-        return matched_cat, summary, confidence
-
-    def _score_recency(self, review_date_str: str) -> int:
-        if not review_date_str:
-            return 20
-
-        try:
-            dt = datetime.strptime(review_date_str.strip()[:10], "%Y-%m-%d").date()
-            delta_days = (date.today() - dt).days
-            if delta_days < 0:
-                delta_days = 0
-
-            if delta_days <= 7:
-                return 30
-            elif delta_days <= 30:
-                return 20
-            elif delta_days <= 90:
-                return 10
-            else:
-                return 0
-        except Exception:
-            lower = review_date_str.lower()
-            if "today" in lower or "yesterday" in lower or "day" in lower:
-                return 30
-            elif "week" in lower or "month" in lower:
-                return 20
-            return 10
-
-    def _score_seniority(self, title: str) -> int:
-        if not title:
-            return 5
-        t_lower = title.lower()
-
-        c_suite = ["c-level", "chief", "ceo", "cto", "cfo", "coo", "cro", "cmo", "vp", "vice president", "owner", "founder", "president"]
-        director = ["director", "head of", "lead", "principal"]
-        manager = ["manager", "supervisor"]
-
-        for kw in c_suite:
-            if kw in t_lower:
-                return 40
-        for kw in director:
-            if kw in t_lower:
-                return 30
-        for kw in manager:
-            if kw in t_lower:
-                return 20
-        if len(t_lower.strip()) > 0 and t_lower != "unknown":
-            return 10
-        return 5
-
-    def _score_pain_intensity(self, review_text: str) -> int:
-        t_lower = review_text.lower()
-        if not t_lower:
-            return 10
-
-        high_pain = ["cancel", "switch", "terrible", "worst", "unusable", "nightmare", "constant crash", "frustrated", "leaving"]
-        med_pain = ["issue", "problem", "broken", "annoying", "disappointed", "slow", "fail"]
-
-        if any(kw in t_lower for kw in high_pain):
-            return 30
-        elif any(kw in t_lower for kw in med_pain):
-            return 20
-        elif len(t_lower) > 20:
-            return 10
-        return 0
-
-    def _generate_email(
-        self, first_name: str, company: str, pain_category: str, pain_summary: str, competitor_product: str
-    ) -> str:
-        """
-        Drafts outreach email following Stage 7 rules:
-        - No G2 reference
-        - Opens with implied pain
-        - Peer-to-peer tone
-        - Under 100 words
-        - No subject line
-        - Distinct per pain category
-        """
-        hooks = {
-            "Performance / Reliability Issues": (
-                f"Hi {first_name}, handling unexpected system downtime and reliability issues can stall critical workflows at {company}. "
-                f"Teams evaluating alternatives to {competitor_product} often need high-availability architecture with zero latency spikes. "
-                "Our platform delivers 99.99% uptime with enterprise SLAs. Open to comparing reliability benchmark data this week?"
-            ),
-            "Integration Failures": (
-                f"Hi {first_name}, broken data syncs and failing CRM connectors usually create headaches for operational teams at {company}. "
-                f"If syncing data across your tech stack with {competitor_product} has required manual workarounds, our native webhooks "
-                "and pre-built connectors resolve those sync errors instantly. Worth a 5-minute look?"
-            ),
-            "Poor Customer Support": (
-                f"Hi {first_name}, delayed support ticket responses when dealing with business-critical tools can freeze key projects at {company}. "
-                f"We hear from teams moving away from {competitor_product} that dedicated engineering support makes all the difference. "
-                "Every customer gets a dedicated Slack channel with under 15-minute response times. Open to connecting?"
-            ),
-            "Pricing / Value Mismatch": (
-                f"Hi {first_name}, unexpected price escalations without matching product value can make scaling difficult at {company}. "
-                f"If {competitor_product}'s current tiering feels restrictive, our transparent seat-based model keeps ROI predictable. "
-                "Happy to share a quick price-to-performance breakdown if helpful."
-            ),
-            "Missing Features": (
-                f"Hi {first_name}, hitting feature limits in your workflow software usually slows down key initiatives at {company}. "
-                f"We built advanced customization specifically for teams outgrowing {competitor_product}'s core feature set. "
-                "Would you be open to seeing how we plug those functional gaps?"
-            ),
-        }
-
-        default_email = (
-            f"Hi {first_name}, scaling operations at {company} often brings unexpected bottlenecks when legacy tools fall short. "
-            f"If your current setup with {competitor_product} isn't keeping pace with your team's requirements, our platform is designed "
-            "for seamless scalability and fast execution. Worth a quick conversation?"
+        user_message = _build_user_message(
+            reviewer_name, reviewer_title, reviewer_company,
+            review_text, review_date, competitor_product,
         )
 
-        return hooks.get(pain_category, default_email)
+        raw_response = _call_llm(user_message)
+        parsed = _extract_json(raw_response)
+        result = _validate_and_coerce(parsed, fallback)
 
-    def _try_llm_inference(self, *args, **kwargs) -> Any:
-        # Return None to use high-performance local agent reasoning engine unless external credentials set
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return None
-        # Optional LLM integration point
-        return None
+        return result
