@@ -37,7 +37,7 @@ load_dotenv()
 # Backend selector — change to 'anthropic' when ANTHROPIC_API_KEY is ready
 # ---------------------------------------------------------------------------
 MODEL_BACKEND: str = "gemini"  # 'gemini' | 'anthropic'
-GEMINI_MODEL: str = "gemini-2.0-flash"   # fast, accurate, free-tier eligible
+GEMINI_MODEL: str = "gemini-2.5-flash"  # fast, accurate, default Gemini model
 CLAUDE_MODEL: str = "claude-sonnet-4-5"  # swap target when key is available
 
 # ---------------------------------------------------------------------------
@@ -325,16 +325,33 @@ def _call_gemini(user_message: str) -> str:
             "GEMINI_API_KEY is not set or empty in .env. Please paste your Gemini API key in .env."
         )
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=user_message,
-        config=genai.types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            temperature=0.2,
-            max_output_tokens=2048,
-        ),
-    )
-    return response.text
+
+    # Models to attempt in order (target model first, followed by high-availability fallbacks)
+    models_to_try = [GEMINI_MODEL, "gemini-2.0-flash-lite", "gemini-2.0-flash"]
+    last_error = None
+
+    for m in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=m,
+                contents=user_message,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.2,
+                    max_output_tokens=2048,
+                ),
+            )
+            return response.text
+        except Exception as err:
+            last_error = err
+            err_str = str(err)
+            if "404" in err_str or "NOT_FOUND" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                continue
+            raise err
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Failed to generate content with Gemini")
 
 
 def _call_anthropic(user_message: str) -> str:
