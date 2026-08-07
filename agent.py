@@ -326,8 +326,8 @@ def _call_gemini(user_message: str) -> str:
         )
     client = genai.Client(api_key=api_key)
 
-    # Models to attempt in order (target model first, followed by high-availability fallbacks)
-    models_to_try = [GEMINI_MODEL, "gemini-2.0-flash-lite", "gemini-2.0-flash"]
+    # Models to attempt in order (gemini-2.5-flash first, followed by gemini-2.0-flash-lite)
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
     last_error = None
 
     for m in models_to_try:
