@@ -309,35 +309,29 @@ def _validate_and_coerce(data: Dict[str, Any], fallback: Dict[str, str]) -> Dict
     return data
 
 
-def _call_anthropic(user_message: str) -> str:
+def _call_openai_compat(user_prompt: str) -> str:
     """
-    Calls claude-opus-4-8 via AgentRouter's Anthropic-compatible endpoint.
+    Calls claude-opus-4-8 via AgentRouter's OpenAI-compatible endpoint.
     Requires AGENTROUTER_API_KEY in .env.
     """
-    import anthropic
+    import openai
     load_dotenv(override=True)
     api_key = os.getenv("AGENTROUTER_API_KEY", "").strip()
-    if not api_key:
-        raise EnvironmentError(
-            "AGENTROUTER_API_KEY is not set or empty in .env. Please paste your AGENTROUTER_API_KEY in .env."
-        )
-    client = anthropic.Anthropic(
-        api_key=api_key,
-        base_url="https://agentrouter.org/"
+    client = openai.OpenAI(api_key=api_key, base_url="https://agentrouter.org/v1")
+    response = client.chat.completions.create(
+        model="claude-opus-4-8",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ],
+        max_tokens=16000
     )
-    message = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=16000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    text_block = next(block for block in message.content if block.type == "text")
-    return text_block.text
+    return response.choices[0].message.content
 
 
 def _call_llm(user_message: str) -> str:
     """Dispatches to the configured LLM backend."""
-    return _call_anthropic(user_message)
+    return _call_openai_compat(user_message)
 
 
 class AntigravityReviewAgent:
