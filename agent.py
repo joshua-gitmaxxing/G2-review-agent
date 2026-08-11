@@ -327,11 +327,12 @@ def _call_anthropic(user_message: str) -> str:
     )
     message = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=2048,
+        max_tokens=16000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
-    return message.content[0].text
+    text_block = next(block for block in message.content if block.type == "text")
+    return text_block.text
 
 
 def _call_llm(user_message: str) -> str:
