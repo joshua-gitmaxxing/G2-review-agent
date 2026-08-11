@@ -1,19 +1,16 @@
 """
-G2 Review Signal Agent — Gemini Flash via google-genai SDK.
+G2 Review Signal Agent — Claude claude-opus-4-8 via AgentRouter (Anthropic-compatible API).
 
 This module implements the Antigravity agent reasoning layer described in the
 G2 Review Signal Workflow Build Brief (Section 5 Stages 2, 3, 7 and Section 8).
 
-All reasoning is delegated to the LLM via the google-genai SDK:
+All reasoning is delegated to the LLM via the Anthropic SDK pointed at AgentRouter:
   Stage 2 — Pain extraction, pain category classification, pain summary, confidence scoring
   Stage 3 — Lead scoring across all three dimensions (recency, seniority, pain intensity),
              total score calculation, tier assignment
   Stage 7 — Personalized outreach email drafting
 
-To swap to Claude Sonnet 4.6 once ANTHROPIC_API_KEY is available:
-  1. Set MODEL_BACKEND = 'anthropic' at the top of this file
-  2. Set ANTHROPIC_API_KEY in your .env file
-  That is the only change required.
+Requires AGENTROUTER_API_KEY in .env.
 
 The scoring rubrics and hard constraints from Section 5 are enforced entirely
 in the system prompt. Python post-processing only validates types, enforces
@@ -29,16 +26,14 @@ from datetime import datetime
 from typing import Any, Dict
 
 from dotenv import load_dotenv
-import openai
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Backend selector — change to 'anthropic' when ANTHROPIC_API_KEY is ready
+# Backend config
 # ---------------------------------------------------------------------------
-MODEL_BACKEND: str = "openai_compat"  # 'openai_compat' | 'anthropic'
-OPENAI_COMPAT_MODEL: str = "gpt-5.6-sol"
-CLAUDE_MODEL: str = "claude-sonnet-4-5"  # swap target when key is available
+MODEL_BACKEND: str = "anthropic"  # 'anthropic' (AgentRouter endpoint)
+CLAUDE_MODEL: str = "claude-opus-4-8"
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -314,40 +309,22 @@ def _validate_and_coerce(data: Dict[str, Any], fallback: Dict[str, str]) -> Dict
     return data
 
 
-def _call_openai_compat(user_message: str) -> str:
+def _call_anthropic(user_message: str) -> str:
     """
-    Calls OpenAI-compatible API (AgentRouter). Requires AGENTROUTER_API_KEY in .env.
+    Calls claude-opus-4-8 via AgentRouter's Anthropic-compatible endpoint.
+    Requires AGENTROUTER_API_KEY in .env.
     """
+    import anthropic
     load_dotenv(override=True)
     api_key = os.getenv("AGENTROUTER_API_KEY", "").strip()
     if not api_key:
         raise EnvironmentError(
             "AGENTROUTER_API_KEY is not set or empty in .env. Please paste your AGENTROUTER_API_KEY in .env."
         )
-    client = openai.OpenAI(api_key=api_key, base_url="https://agentrouter.org/v1")
-    response = client.chat.completions.create(
-        model=OPENAI_COMPAT_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message}
-        ]
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        base_url="https://agentrouter.org/"
     )
-    return response.choices[0].message.content
-
-
-def _call_anthropic(user_message: str) -> str:
-    """
-    Calls Claude Sonnet 4.6 via the Anthropic SDK. Requires ANTHROPIC_API_KEY in .env.
-    Activate by setting MODEL_BACKEND = 'anthropic' at the top of this file.
-    """
-    import anthropic
-    load_dotenv(override=True)
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
-        raise EnvironmentError(
-            "ANTHROPIC_API_KEY is not set or empty in .env. Please paste your Anthropic API key in .env."
-        )
-    client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=2048,
@@ -359,18 +336,15 @@ def _call_anthropic(user_message: str) -> str:
 
 def _call_llm(user_message: str) -> str:
     """Dispatches to the configured LLM backend."""
-    if MODEL_BACKEND == "anthropic":
-        return _call_anthropic(user_message)
-    return _call_openai_compat(user_message)
+    return _call_anthropic(user_message)
 
 
 class AntigravityReviewAgent:
     """
     G2 Review Signal Agent.
 
-    Currently powered by Gemini Flash via google-genai SDK.
-    Switch to Claude Sonnet 4.6 by setting MODEL_BACKEND = 'anthropic'
-    and adding ANTHROPIC_API_KEY to .env — no other code changes needed.
+    Powered by claude-opus-4-8 via AgentRouter (Anthropic-compatible API).
+    Requires AGENTROUTER_API_KEY in .env.
 
     The system prompt encodes all scoring rubrics, constraints, and output
     schema requirements from Section 5 (Stages 2, 3, 7) of the build brief.
