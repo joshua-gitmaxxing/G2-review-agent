@@ -1,16 +1,16 @@
 """
-G2 Review Signal Agent — Claude claude-opus-4-8 via AgentRouter (Anthropic-compatible API).
+G2 Review Signal Agent — Gemini Flash via google-genai SDK.
 
 This module implements the Antigravity agent reasoning layer described in the
 G2 Review Signal Workflow Build Brief (Section 5 Stages 2, 3, 7 and Section 8).
 
-All reasoning is delegated to the LLM via the Anthropic SDK pointed at AgentRouter:
+All reasoning is delegated to the LLM via the google-genai SDK:
   Stage 2 — Pain extraction, pain category classification, pain summary, confidence scoring
   Stage 3 — Lead scoring across all three dimensions (recency, seniority, pain intensity),
              total score calculation, tier assignment
   Stage 7 — Personalized outreach email drafting
 
-Requires AGENTROUTER_API_KEY in .env.
+Requires GEMINI_API_KEY in .env.
 
 The scoring rubrics and hard constraints from Section 5 are enforced entirely
 in the system prompt. Python post-processing only validates types, enforces
@@ -26,14 +26,15 @@ from datetime import datetime
 from typing import Any, Dict
 
 from dotenv import load_dotenv
+import google.genai as genai
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Backend config
 # ---------------------------------------------------------------------------
-MODEL_BACKEND: str = "anthropic"  # 'anthropic' (AgentRouter endpoint)
-CLAUDE_MODEL: str = "claude-opus-4-8"
+MODEL_BACKEND: str = "gemini"
+GEMINI_MODEL: str = "gemini-3.6-flash"
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -309,37 +310,57 @@ def _validate_and_coerce(data: Dict[str, Any], fallback: Dict[str, str]) -> Dict
     return data
 
 
-def _call_openai_compat(user_prompt: str) -> str:
+def _call_gemini(user_message: str) -> str:
     """
-    Calls claude-opus-4-8 via AgentRouter's OpenAI-compatible endpoint.
-    Requires AGENTROUTER_API_KEY in .env.
+    Calls Gemini via the google-genai SDK. Requires GEMINI_API_KEY in .env.
+    Models attempted in order: gemini-2.5-flash, then gemini-2.0-flash-lite.
     """
-    import openai
     load_dotenv(override=True)
-    api_key = os.getenv("AGENTROUTER_API_KEY", "").strip()
-    client = openai.OpenAI(api_key=api_key, base_url="https://agentrouter.org/v1")
-    response = client.chat.completions.create(
-        model="claude-opus-4-8",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt}
-        ],
-        max_tokens=16000
-    )
-    return response.choices[0].message.content
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise EnvironmentError(
+            "GEMINI_API_KEY is not set or empty in .env. Please paste your Gemini API key in .env."
+        )
+    client = genai.Client(api_key=api_key)
+
+    models_to_try = [GEMINI_MODEL, "gemini-3.5-flash", "gemini-flash-latest"]
+    last_error = None
+
+    for m in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=m,
+                contents=user_message,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.2,
+                    max_output_tokens=2048,
+                ),
+            )
+            return response.text
+        except Exception as err:
+            last_error = err
+            err_str = str(err)
+            if "404" in err_str or "NOT_FOUND" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                continue
+            raise err
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Failed to generate content with Gemini")
 
 
 def _call_llm(user_message: str) -> str:
     """Dispatches to the configured LLM backend."""
-    return _call_openai_compat(user_message)
+    return _call_gemini(user_message)
 
 
 class AntigravityReviewAgent:
     """
     G2 Review Signal Agent.
 
-    Powered by claude-opus-4-8 via AgentRouter (Anthropic-compatible API).
-    Requires AGENTROUTER_API_KEY in .env.
+    Powered by Gemini Flash via google-genai SDK.
+    Requires GEMINI_API_KEY in .env.
 
     The system prompt encodes all scoring rubrics, constraints, and output
     schema requirements from Section 5 (Stages 2, 3, 7) of the build brief.
