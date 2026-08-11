@@ -29,15 +29,15 @@ from datetime import datetime
 from typing import Any, Dict
 
 from dotenv import load_dotenv
-import google.genai as genai
+import openai
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Backend selector — change to 'anthropic' when ANTHROPIC_API_KEY is ready
 # ---------------------------------------------------------------------------
-MODEL_BACKEND: str = "gemini"  # 'gemini' | 'anthropic'
-GEMINI_MODEL: str = "gemini-2.5-flash"  # fast, accurate, default Gemini model
+MODEL_BACKEND: str = "openai_compat"  # 'openai_compat' | 'anthropic'
+OPENAI_COMPAT_MODEL: str = "gpt-5.6-sol"
 CLAUDE_MODEL: str = "claude-sonnet-4-5"  # swap target when key is available
 
 # ---------------------------------------------------------------------------
@@ -314,44 +314,25 @@ def _validate_and_coerce(data: Dict[str, Any], fallback: Dict[str, str]) -> Dict
     return data
 
 
-def _call_gemini(user_message: str) -> str:
+def _call_openai_compat(user_message: str) -> str:
     """
-    Calls Gemini via the google-genai SDK. Requires GEMINI_API_KEY in .env.
+    Calls OpenAI-compatible API (AgentRouter). Requires AGENTROUTER_API_KEY in .env.
     """
     load_dotenv(override=True)
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    api_key = os.getenv("AGENTROUTER_API_KEY", "").strip()
     if not api_key:
         raise EnvironmentError(
-            "GEMINI_API_KEY is not set or empty in .env. Please paste your Gemini API key in .env."
+            "AGENTROUTER_API_KEY is not set or empty in .env. Please paste your AGENTROUTER_API_KEY in .env."
         )
-    client = genai.Client(api_key=api_key)
-
-    # Models to attempt in order (gemini-2.5-flash first, followed by gemini-2.0-flash-lite)
-    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
-    last_error = None
-
-    for m in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=m,
-                contents=user_message,
-                config=genai.types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.2,
-                    max_output_tokens=2048,
-                ),
-            )
-            return response.text
-        except Exception as err:
-            last_error = err
-            err_str = str(err)
-            if "404" in err_str or "NOT_FOUND" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                continue
-            raise err
-
-    if last_error:
-        raise last_error
-    raise RuntimeError("Failed to generate content with Gemini")
+    client = openai.OpenAI(api_key=api_key, base_url="https://agentrouter.org/v1")
+    response = client.chat.completions.create(
+        model=OPENAI_COMPAT_MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message}
+        ]
+    )
+    return response.choices[0].message.content
 
 
 def _call_anthropic(user_message: str) -> str:
@@ -380,7 +361,7 @@ def _call_llm(user_message: str) -> str:
     """Dispatches to the configured LLM backend."""
     if MODEL_BACKEND == "anthropic":
         return _call_anthropic(user_message)
-    return _call_gemini(user_message)
+    return _call_openai_compat(user_message)
 
 
 class AntigravityReviewAgent:
