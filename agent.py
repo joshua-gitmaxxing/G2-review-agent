@@ -325,7 +325,7 @@ def _validate_and_coerce(data: Dict[str, Any], fallback: Dict[str, str]) -> Dict
 def _call_gemini(user_message: str) -> str:
     """
     Calls Gemini via the google-genai SDK. Requires GEMINI_API_KEY in .env.
-    Models attempted in order: gemini-2.5-flash, then gemini-2.0-flash-lite.
+    Models attempted in order: gemini-3.6-flash, gemini-3.5-flash, gemini-flash-latest.
     """
     load_dotenv(override=True)
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -335,7 +335,13 @@ def _call_gemini(user_message: str) -> str:
         )
     client = genai.Client(api_key=api_key)
 
-    models_to_try = [GEMINI_MODEL, "gemini-3.5-flash", "gemini-flash-latest"]
+    models_to_try = [
+        GEMINI_MODEL,          # gemini-3.6-flash (primary)
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-flash-lite-latest",
+    ]
     last_error = None
 
     for m in models_to_try:
@@ -349,11 +355,25 @@ def _call_gemini(user_message: str) -> str:
                     max_output_tokens=8192,
                 ),
             )
-            return response.text
+            # response.text raises ValueError if the response is blocked or empty
+            # (e.g. finish_reason=SAFETY). Treat this the same as a 404/429 and
+            # try the next model rather than crashing.
+            try:
+                text = response.text
+            except (ValueError, AttributeError) as text_err:
+                last_error = text_err
+                continue
+
+            if not text or not text.strip():
+                last_error = ValueError(f"Model {m} returned an empty response.")
+                continue
+
+            return text
+
         except Exception as err:
             last_error = err
             err_str = str(err)
-            if "404" in err_str or "NOT_FOUND" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            if any(token in err_str for token in ("404", "NOT_FOUND", "429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")):
                 continue
             raise err
 
