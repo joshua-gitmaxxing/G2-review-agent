@@ -200,15 +200,27 @@ def _build_user_message(
 def _extract_json(raw_text: str) -> Dict[str, Any]:
     """
     Extracts and parses the JSON object from the model's raw text response.
-    Handles markdown code fences if the model wraps its output.
+    Handles three formats:
+      1. Raw JSON: { ... }
+      2. Markdown-wrapped with language tag: ```json { ... } ```
+      3. Markdown-wrapped without language tag: ``` { ... } ```
     """
     cleaned = raw_text.strip()
 
-    # Strip markdown code fences if present
+    # Strategy 1: extract content from inside a markdown code fence (anywhere in text)
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL | re.IGNORECASE)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass  # fall through to brace extraction on the fence content
+
+    # Strategy 2: strip a leading fence if present, then do brace extraction
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+        cleaned = re.sub(r"\s*```\s*$", "", cleaned).strip()
 
+    # Strategy 3: brace extraction from whatever remains
     start = cleaned.find("{")
     end = cleaned.rfind("}") + 1
     if start == -1 or end == 0:
@@ -334,7 +346,7 @@ def _call_gemini(user_message: str) -> str:
                 config=genai.types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     temperature=0.2,
-                    max_output_tokens=2048,
+                    max_output_tokens=8192,
                 ),
             )
             return response.text
