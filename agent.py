@@ -23,7 +23,7 @@ import json
 import os
 import re
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 from dotenv import load_dotenv
 import google.genai as genai
@@ -35,6 +35,120 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 MODEL_BACKEND: str = "gemini"
 GEMINI_MODEL: str = "gemini-3.6-flash"
+
+# ---------------------------------------------------------------------------
+# Helpers for company identity and normalization
+# ---------------------------------------------------------------------------
+def is_g2_size_label(val: Optional[str]) -> bool:
+    """Returns True if the value matches a known G2 company size label."""
+    if not val or not isinstance(val, str):
+        return False
+    s = val.strip().lower()
+    if s in {
+        "small-business", "small business", "small_business",
+        "mid-market", "mid market", "mid_market",
+        "enterprise",
+    }:
+        return True
+    if re.match(r"^(small[-_ ]?business|mid[-_ ]?market|enterprise)\s*\(.*\)$", s):
+        return True
+    if re.match(r"^(<=?\s*\d+|\d+\s*[-–]\s*\d+|\>\s*\d+|\d+\+?)\s*(emp\.?|employees)$", s):
+        return True
+    return False
+
+
+def is_missing_company(val: Optional[str]) -> bool:
+    """Returns True if the company value represents a missing or dummy company name."""
+    if not val or not isinstance(val, str):
+        return True
+    s = val.strip().lower()
+    if s in {"", "none", "null", "unknown", "unknown company", "n/a", "na", "undefined", "not provided"}:
+        return True
+    return False
+
+
+def normalize_company_info(
+    company: Any,
+    company_size: Any,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Normalizes reviewer_company and reviewer_company_size:
+    - Missing or placeholder company names (None, 'Unknown Company', 'None', etc.) become None.
+    - Missing or placeholder size labels become None.
+    - If reviewer_company contains a recognized G2 size label, move it to
+      reviewer_company_size (if not already set) and leave reviewer_company as None.
+    """
+    norm_company = str(company).strip() if company is not None else None
+    norm_size = str(company_size).strip() if company_size is not None else None
+
+    if is_missing_company(norm_company):
+        norm_company = None
+    if is_missing_company(norm_size):
+        norm_size = None
+
+    if norm_company and is_g2_size_label(norm_company):
+        if not norm_size:
+            norm_size = norm_company
+        norm_company = None
+
+    return norm_company, norm_size
+
+
+def email_treats_size_as_employer(email: str, company_size: Optional[str] = None) -> bool:
+    """
+    Checks if an email treats a company size value or placeholder as an employer name.
+    Matches phrases like 'teams at Small-Business (50 or fewer emp.)' or 'at Mid-Market (51-1000 emp.)',
+    while allowing legitimate descriptive phrases such as 'mid-market teams'.
+    """
+    if not email or not isinstance(email, str):
+        return False
+
+    # Check if the specific normalized company_size for this review is used after 'at' or 'teams at'
+    if company_size and isinstance(company_size, str) and company_size.strip():
+        escaped_size = re.escape(company_size.strip())
+        if re.search(rf"\b(?:teams\s+at|at)\s+{escaped_size}\b", email, flags=re.IGNORECASE):
+            return True
+
+    # General check for any G2 size labels or parenthesized employee count suffixes after 'at' or 'teams at'
+    size_pattern = (
+        r"\b(?:teams\s+at|at)\s+"
+        r"(?:small[-_ ]?business|mid[-_ ]?market|enterprise)"
+        r"(?:\s*\([^)]*\))?"
+    )
+    if re.search(size_pattern, email, flags=re.IGNORECASE):
+        return True
+
+    # Check for placeholder strings after 'at' or 'teams at'
+    placeholder_pattern = (
+        r"\b(?:teams\s+at|at)\s+"
+        r"(?:unknown\s+company|unknown|none|null)\b"
+    )
+    if re.search(placeholder_pattern, email, flags=re.IGNORECASE):
+        return True
+
+    return False
+
+
+def _generate_fallback_email(data: Dict[str, Any]) -> str:
+    """Generates a safe fallback outreach email."""
+    first = (
+        data["reviewer_name"].split()[0]
+        if data.get("reviewer_name") and data["reviewer_name"] != "Anonymous Reviewer"
+        else "there"
+    )
+    company = data.get("reviewer_company")
+    if company and not is_missing_company(company) and not is_g2_size_label(company):
+        company_context = f"teams at {company}"
+    else:
+        company_context = "teams"
+
+    pain_category = data.get("pain_category", "Other").lower()
+    return (
+        f"Hi {first}, {company_context} dealing with "
+        f"{pain_category} often look for a better alternative. "
+        "Worth a quick conversation?"
+    )
+
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -135,7 +249,11 @@ HARD RULES (every single one is non-negotiable):
   5. Length: STRICTLY under 100 words — count carefully before finalizing
   6. Do NOT include a subject line — email body only
   7. Address the reviewer by first name only (extract from reviewer_name field)
-  8. Reference their company name naturally in the opening line
+  8. Reference their company name naturally in the opening line ONLY if a verified company name is provided.
+     If reviewer_company is null, missing, or "Not provided":
+       - Do NOT invent or guess a company name.
+       - NEVER use company size (such as "Small-Business", "Mid-Market", "Enterprise"), "Unknown Company", "None", or "null" as an employer name.
+       - Instead, address their role or team generally (e.g., "teams dealing with...", "leaders dealing with...").
   9. Each pain category must produce a meaningfully different email:
      - Different opening hook
      - Different value proposition
@@ -151,12 +269,13 @@ Return ONLY a raw JSON object. The response must:
   - End with }
   - Contain no markdown, no code fences, no explanation, no preamble
 
-Required fields (exactly these 16):
+Required fields (exactly these 17):
 
 {
   "reviewer_name": "<pass through unchanged from input>",
   "reviewer_title": "<pass through unchanged from input>",
-  "reviewer_company": "<pass through unchanged from input>",
+  "reviewer_company": "<pass through unchanged from input, or null if not provided>",
+  "reviewer_company_size": "<pass through unchanged from input, or null if not provided>",
   "review_text": "<pass through unchanged from input>",
   "review_date": "<pass through unchanged from input, YYYY-MM-DD format>",
   "pain_category": "<exactly one of the 11 categories listed above>",
@@ -176,19 +295,23 @@ Required fields (exactly these 16):
 def _build_user_message(
     reviewer_name: str,
     reviewer_title: str,
-    reviewer_company: str,
+    reviewer_company: Optional[str],
+    reviewer_company_size: Optional[str],
     review_text: str,
     review_date: str,
     competitor_product: str,
 ) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
+    company_display = reviewer_company if reviewer_company else "Not provided"
+    size_display = reviewer_company_size if reviewer_company_size else "Not provided"
     return (
         f"Today's date: {today}\n\n"
         "Analyze the following G2 review and return the JSON object per your instructions.\n\n"
         "---\n"
         f"Reviewer Name: {reviewer_name}\n"
         f"Reviewer Title: {reviewer_title}\n"
-        f"Reviewer Company: {reviewer_company}\n"
+        f"Reviewer Company: {company_display}\n"
+        f"Reviewer Company Size: {size_display}\n"
         f"Review Date: {review_date if review_date else 'Not provided'}\n"
         f"Competitor Product: {competitor_product}\n\n"
         f"Review Text:\n{review_text if review_text else 'No review text provided.'}\n"
@@ -246,10 +369,15 @@ def _validate_and_coerce(data: Dict[str, Any], fallback: Dict[str, str]) -> Dict
     }
 
     # Restore pass-through fields from original input
-    for field in ("reviewer_name", "reviewer_title", "reviewer_company",
+    for field in ("reviewer_name", "reviewer_title",
                   "review_text", "review_date", "competitor_product"):
         if not data.get(field):
             data[field] = fallback.get(field, "")
+
+    # Restore both company fields from normalized fallback.
+    # NEVER trust the model to supply, invent, or alter identity information.
+    data["reviewer_company"] = fallback.get("reviewer_company")
+    data["reviewer_company_size"] = fallback.get("reviewer_company_size")
 
     # confidence_score — coerce to float, clamp to [0.0, 1.0]
     try:
@@ -306,18 +434,14 @@ def _validate_and_coerce(data: Dict[str, Any], fallback: Dict[str, str]) -> Dict
             f"Reviewer reported issues related to {data['pain_category'].lower()}."
         )
 
-    # drafted_email fallback
+    # drafted_email fallback and validation
     if not data.get("drafted_email"):
-        first = (
-            data["reviewer_name"].split()[0]
-            if data.get("reviewer_name")
-            else "there"
-        )
-        data["drafted_email"] = (
-            f"Hi {first}, teams at {data['reviewer_company']} dealing with "
-            f"{data['pain_category'].lower()} often look for a better alternative. "
-            "Worth a quick conversation?"
-        )
+        data["drafted_email"] = _generate_fallback_email(data)
+    else:
+        # If the generated email treats any company size or placeholder as an employer name,
+        # do not repair through partial string replacement; replace the entire email with the safe generic fallback.
+        if email_treats_size_as_employer(data["drafted_email"], data.get("reviewer_company_size")):
+            data["drafted_email"] = _generate_fallback_email(data)
 
     return data
 
@@ -402,7 +526,10 @@ class AntigravityReviewAgent:
     def analyze(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         reviewer_name = str(payload.get("reviewer_name") or "Anonymous Reviewer").strip()
         reviewer_title = str(payload.get("reviewer_title") or "Unknown Role").strip()
-        reviewer_company = str(payload.get("reviewer_company") or "Unknown Company").strip()
+        reviewer_company, reviewer_company_size = normalize_company_info(
+            payload.get("reviewer_company"),
+            payload.get("reviewer_company_size"),
+        )
         review_text = str(payload.get("review_text") or "").strip()
         review_date = str(payload.get("review_date") or "").strip()
         competitor_product = str(
@@ -413,14 +540,20 @@ class AntigravityReviewAgent:
             "reviewer_name": reviewer_name,
             "reviewer_title": reviewer_title,
             "reviewer_company": reviewer_company,
+            "reviewer_company_size": reviewer_company_size,
             "review_text": review_text,
             "review_date": review_date or datetime.now().strftime("%Y-%m-%d"),
             "competitor_product": competitor_product,
         }
 
         user_message = _build_user_message(
-            reviewer_name, reviewer_title, reviewer_company,
-            review_text, review_date, competitor_product,
+            reviewer_name=reviewer_name,
+            reviewer_title=reviewer_title,
+            reviewer_company=reviewer_company,
+            reviewer_company_size=reviewer_company_size,
+            review_text=review_text,
+            review_date=review_date,
+            competitor_product=competitor_product,
         )
 
         raw_response = _call_llm(user_message)
