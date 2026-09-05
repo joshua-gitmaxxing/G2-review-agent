@@ -32,7 +32,7 @@ class AnalysisResponse(BaseModel):
     pain_intensity_score: int
     total_score: int
     tier: str
-    drafted_email: str
+    drafted_email: Optional[str] = None
     competitor_product: str
 
 

@@ -11,7 +11,12 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from main import app
-from agent import AntigravityReviewAgent, normalize_company_info, is_g2_size_label
+from agent import (
+    AntigravityReviewAgent,
+    normalize_company_info,
+    is_g2_size_label,
+    email_treats_size_as_employer,
+)
 
 
 SAMPLE_MOCK_MODEL_OUTPUT = {
@@ -289,7 +294,9 @@ class TestCompanyFields(unittest.TestCase):
         self.assertNotIn("(50 or fewer emp.)", result["drafted_email"])
         self.assertEqual(
             result["drafted_email"],
-            "Hi Jane, teams dealing with integration failures often look for a better alternative. Worth a quick conversation?"
+            "Hi Jane, Dealing with integration issues can create operational friction for teams. "
+            "CRM integrations fail frequently, disrupting operational syncs. "
+            "Is improving integration reliability currently a priority?"
         )
 
     @patch("agent._call_llm")
@@ -317,7 +324,9 @@ class TestCompanyFields(unittest.TestCase):
         self.assertNotIn("(51-1000 emp.)", result["drafted_email"])
         self.assertEqual(
             result["drafted_email"],
-            "Hi Jane, teams dealing with integration failures often look for a better alternative. Worth a quick conversation?"
+            "Hi Jane, Dealing with integration issues can create operational friction for teams. "
+            "CRM integrations fail frequently, disrupting operational syncs. "
+            "Is improving integration reliability currently a priority?"
         )
 
     @patch("agent._call_llm")
@@ -339,9 +348,19 @@ class TestCompanyFields(unittest.TestCase):
             "review_text": "CRM integrations constantly disconnect, halting operations.",
         }
 
+        # 1. Verify email_treats_size_as_employer does not treat legitimate adjective as employer name (TEST-005)
+        self.assertFalse(email_treats_size_as_employer(expected_email, "Mid-Market"))
+
+        # 2. Verify deterministic safe neutral email is generated when no approved outreach context exists (TEST-002)
         result = self.agent.analyze(payload)
-        # "mid-market teams" as an adjective must NOT be changed or replaced
-        self.assertEqual(result["drafted_email"], expected_email)
+        self.assertEqual(
+            result["drafted_email"],
+            "Hi Jane, Dealing with integration issues can create operational friction for teams. "
+            "CRM integrations fail frequently, disrupting operational syncs. "
+            "Is improving integration reliability currently a priority?"
+        )
+
+
 
 
 if __name__ == "__main__":
