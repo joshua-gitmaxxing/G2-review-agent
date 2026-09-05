@@ -19,7 +19,8 @@ agent_service = AntigravityReviewAgent()
 class AnalysisResponse(BaseModel):
     reviewer_name: str
     reviewer_title: str
-    reviewer_company: str
+    reviewer_company: Optional[str] = None
+    reviewer_company_size: Optional[str] = None
     review_text: str
     review_date: str
     pain_category: str
