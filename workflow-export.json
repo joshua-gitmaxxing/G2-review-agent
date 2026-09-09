@@ -1,0 +1,1239 @@
+{
+  "name": "competitive displacement outbound system",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "Run actor and get dataset",
+        "actorSource": "store",
+        "actorId": {
+          "__rl": true,
+          "value": "XQAkoDssJyWZmyR0W",
+          "mode": "id"
+        },
+        "customBody": "={\n  \"url\": \"{{ $json.url }}\",\n  \"limit\": 10,\n  \"sortOrder\": \"most_recent\"\n}"
+      },
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [
+        -256,
+        64
+      ],
+      "id": "0bcdef9c-6eba-49be-ad71-2b91a114a870",
+      "name": "fetch G2 reviews.",
+      "credentials": {
+        "apifyApi": {
+          "id": "psxZA1sa4F4M5x3x",
+          "name": "Apify account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      url: \"https://www.g2.com/products/freshsales/reviews\",\n      competitor: \"Freshsales\"\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        64
+      ],
+      "id": "e7046e32-fc5c-4fa8-afe9-dc6f14507f23",
+      "name": "load competitor url."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "590ff254-df4a-43d7-b717-81d009cddd2f",
+              "leftValue": "={{ $json.tier }}",
+              "rightValue": "Discard",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1152,
+        640
+      ],
+      "id": "b20833e9-0d3f-4e2e-b08b-9609ce675c3e",
+      "name": "filter discard leads."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "50a324e9-3b2f-46ea-81d8-1eb3eeff204b",
+              "leftValue": "={{ $json.confidence_score }}",
+              "rightValue": 0.7,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -944,
+        464
+      ],
+      "id": "869dbb04-2afb-447e-95db-dfd6d06d5c6a",
+      "name": "route by confidence score."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "fec0b539-056d-4168-872e-98f59584ee0c",
+              "leftValue": "={{ $json.email }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -672,
+        1152
+      ],
+      "id": "b6b1a54c-782e-4fcf-b25c-14b0bd50f362",
+      "name": "check email found."
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "email": "={{ $json.email }}",
+        "additionalFields": {
+          "companyName": "={{ $json.reviewer_company }}",
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "pain_category",
+                "value": "={{ $json.pain_category }}"
+              },
+              {
+                "property": "tier",
+                "value": "={{ $json.tier }}"
+              },
+              {
+                "property": "confidence_label",
+                "value": "={{ $json.confidence_label }}"
+              },
+              {
+                "property": "drafted_email_body",
+                "value": "={{ $json.drafted_email }}"
+              },
+              {
+                "property": "competitor_product",
+                "value": "={{ $json.competitor_product }}"
+              }
+            ]
+          },
+          "firstName": "={{ $json.first_name }}",
+          "lastName": "={{ $json.last_name }}"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        -448,
+        1056
+      ],
+      "id": "b026894b-80a6-4822-b86d-d5d7170b4545",
+      "name": "create hubspot contact.",
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "PTFparMGmSMXLOU1",
+          "name": "HubSpot account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "g2-review-alerts",
+          "mode": "name"
+        },
+        "message": "=⚠️ Low Confidence Review Requires Decision\n\nReviewer: {{ $json.reviewer_name }} — {{ $json.reviewer_title }}\nCompany Size: {{ $json.reviewer_company_size || \"Not provided\" }}\nCompetitor: {{ $json.competitor_product }}\n\nPain Category: {{ $json.pain_category }}\nPain Summary: {{ $json.pain_summary }}\nConfidence Score: {{ $json.confidence_score }}\nLead Score: {{ $json.total_score }}\nTier: {{ $json.tier }}\n\nReview:\n{{ $json.review_text }}\n\nDrafted Email:\n{{ $json.drafted_email }}",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double",
+            "disapproveLabel": "Discard"
+          }
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        -736,
+        720
+      ],
+      "id": "497d3e1f-8398-4f02-b276-7172b0002558",
+      "name": "send low confidence alert.",
+      "webhookId": "cc16878e-619f-4bdc-9330-c32ef5700e3d",
+      "credentials": {
+        "slackApi": {
+          "id": "dRHZaPYhHy7K03Bo",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f13607df-ce87-4b4e-9c39-c0aef8a245de",
+              "leftValue": "={{ $json.human_review_approved }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -288,
+        720
+      ],
+      "id": "cb434869-7d7a-4ca1-83e5-7e0c6afb7b1b",
+      "name": "route slack decision."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1Pwpn1ClxKyZENRX-oCsYpnfDgMQeuPAEsJ5hZ1m_3_c",
+          "mode": "list",
+          "cachedResultName": "G2 Discard Log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Pwpn1ClxKyZENRX-oCsYpnfDgMQeuPAEsJ5hZ1m_3_c/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Pwpn1ClxKyZENRX-oCsYpnfDgMQeuPAEsJ5hZ1m_3_c/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Company": "=={{ $('Send Review for Analysis').item.json.reviewer_company }}",
+            "Leaning Pain Category": "={{ $('Send Review for Analysis').item.json.pain_category }}",
+            "Confidence Score": "={{ $('Send Review for Analysis').item.json.confidence_score }}",
+            "Timestamp": "=\t{{ $now }}",
+            "Reviewer Name": "={{ $('Send Review for Analysis').item.json.reviewer_name }}",
+            "Review Text": "={{ $('Send Review for Analysis').item.json.review_text }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Reviewer Name",
+              "displayName": "Reviewer Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Review Text",
+              "displayName": "Review Text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Leaning Pain Category",
+              "displayName": "Leaning Pain Category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confidence Score",
+              "displayName": "Confidence Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Timestamp",
+              "displayName": "Timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "useAppend": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        160,
+        784
+      ],
+      "id": "087a9a9b-2579-4d95-8a10-a9a14460a983",
+      "name": "log to discard sheet.",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "5IUdjQ5KqhYoiOC5",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://g2-review-agent.onrender.com/",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -928,
+        64
+      ],
+      "id": "a2cd1d84-5ccc-4ad4-85fc-6929c1c073c6",
+      "name": "Wake Render",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "amount": 200
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -704,
+        64
+      ],
+      "id": "d3e5c885-84e8-498a-ad17-9299a7ff3797",
+      "name": "Wait",
+      "webhookId": "85a1c9af-eea9-4eae-9a14-db4099c23365"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1Pwpn1ClxKyZENRX-oCsYpnfDgMQeuPAEsJ5hZ1m_3_c",
+          "mode": "list",
+          "cachedResultName": "G2 Discard Log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Pwpn1ClxKyZENRX-oCsYpnfDgMQeuPAEsJ5hZ1m_3_c/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 293963911,
+          "mode": "list",
+          "cachedResultName": "Email Not Found",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Pwpn1ClxKyZENRX-oCsYpnfDgMQeuPAEsJ5hZ1m_3_c/edit#gid=293963911"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "logged_at": "={{ $now }}",
+            "reviewer_name": "={{ $json.reviewer_name }}",
+            "reviewer_title": "={{ $json.reviewer_title }}",
+            "reviewer_company": "={{ $json.reviewer_company }}",
+            "reviewer_company_size": "={{ $json.reviewer_company_size }}",
+            "competitor_product": "={{ $json.competitor_product }}",
+            "pain_category": "={{ $json.pain_category }}",
+            "pain_summary": "={{ $json.pain_summary }}",
+            "confidence_score": "={{ $json.confidence_score }}",
+            "total_score": "={{ $json.total_score }}",
+            "tier": "={{ $json.tier }}",
+            "review_text": "={{ $json.review_text }}",
+            "drafted_email": "={{ $json.drafted_email }}",
+            "status": "Email Not Found"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "logged_at",
+              "displayName": "logged_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer_name",
+              "displayName": "reviewer_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer_title",
+              "displayName": "reviewer_title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer_company",
+              "displayName": "reviewer_company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer_company_size",
+              "displayName": "reviewer_company_size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "competitor_product",
+              "displayName": "competitor_product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "pain_category",
+              "displayName": "pain_category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "pain_summary",
+              "displayName": "pain_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence_score",
+              "displayName": "confidence_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "total_score",
+              "displayName": "total_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tier",
+              "displayName": "tier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "review_text",
+              "displayName": "review_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "drafted_email",
+              "displayName": "drafted_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -448,
+        1248
+      ],
+      "id": "f4a0cb38-7b74-4d2d-bb51-fcc6dcb74350",
+      "name": "log email not found",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "5IUdjQ5KqhYoiOC5",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "removeItemsSeenInPreviousExecutions",
+        "dedupeValue": "reviewId",
+        "options": {
+          "historySize": 10000
+        }
+      },
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 2,
+      "position": [
+        -32,
+        64
+      ],
+      "id": "0a710dea-540e-4bbc-be9c-f3cef4260d5c",
+      "name": "Remove Duplicates"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://g2-review-agent.onrender.com/analyze",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "reviewer_name",
+              "value": "={{ $json.reviewerName }}"
+            },
+            {
+              "name": "reviewer_title",
+              "value": "={{ ['small-business', 'small business', 'mid-market', 'mid market', 'enterprise'].some(label => String($json.reviewerTitle || '').toLowerCase().startsWith(label)) ? \"Unknown Role\" : ($json.reviewerTitle || \"Unknown Role\") }}"
+            },
+            {
+              "name": "review_text",
+              "value": "={{ $json.text }}"
+            },
+            {
+              "name": "review_date",
+              "value": "={{ $json.date }}"
+            },
+            {
+              "name": "competitor_product",
+              "value": "={{ $json.productName }}"
+            },
+            {
+              "name": "reviewer_company_size",
+              "value": "={{ $json.companySize || (['small-business', 'small business', 'mid-market', 'mid market', 'enterprise'].some(label => String($json.reviewerTitle || '').toLowerCase().startsWith(label)) ? $json.reviewerTitle : null) }}"
+            },
+            {
+              "name": "likes",
+              "value": "={{ $json.likes }}"
+            },
+            {
+              "name": "dislikes",
+              "value": "={{ $json.dislikes }}"
+            },
+            {
+              "name": "recommendations",
+              "value": "={{ $json.recommendations }}"
+            },
+            {
+              "name": "problemsSolved",
+              "value": "={{ $json.problemsSolved }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        192,
+        64
+      ],
+      "id": "d1b87b41-dce4-4e8f-9118-8fd7a544aabf",
+      "name": "Send Review for Analysis",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c70954b2-59aa-4db8-a407-932e1da6d20b",
+              "leftValue": "={{ Boolean(\n  $json.reviewer_company &&\n  String($json.reviewer_name || '')\n    .trim()\n    .split(/\\s+/)\n    .filter(part => part.replace(/[^A-Za-z]/g, '').length > 1)\n    .length >= 2\n) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -128,
+        448
+      ],
+      "id": "7ff73632-58af-4a1d-8970-1ecf411d7ef2",
+      "name": "check enrichment eligibility"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1Pwpn1ClxKyZENRX-oCsYpnfDgMQeuPAEsJ5hZ1m_3_c",
+          "mode": "list",
+          "cachedResultName": "G2 Discard Log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Pwpn1ClxKyZENRX-oCsYpnfDgMQeuPAEsJ5hZ1m_3_c/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1368721093,
+          "mode": "list",
+          "cachedResultName": "Insufficient Identity",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Pwpn1ClxKyZENRX-oCsYpnfDgMQeuPAEsJ5hZ1m_3_c/edit#gid=1368721093"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "logged_at": "={{ $now }}",
+            "reviewer_name": "={{ $json.reviewer_name }}",
+            "reviewer_title": "={{ $json.reviewer_title }}",
+            "reviewer_company": "={{ $json.reviewer_company }}",
+            "reviewer_company_size": "={{ $json.reviewer_company_size }}",
+            "competitor_product": "={{ $json.competitor_product }}",
+            "pain_category": "={{ $json.pain_category }}",
+            "pain_summary": "={{ $json.pain_summary }}",
+            "confidence_score": "={{ $json.confidence_score }}",
+            "total_score": "={{ $json.total_score }}",
+            "tier": "={{ $json.tier }}",
+            "review_text": "={{ $json.review_text }}",
+            "drafted_email": "={{ $json.drafted_email }}",
+            "status": "Insufficient Identity",
+            "identity_issue": "={{ [\n  !$json.reviewer_company ? 'Missing company' : null,\n  String($json.reviewer_name || '')\n    .trim()\n    .split(/\\s+/)\n    .filter(part => part.replace(/[^A-Za-z]/g, '').length > 1)\n    .length < 2 ? 'Incomplete reviewer name' : null\n].filter(Boolean).join('; ') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "logged_at",
+              "displayName": "logged_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer_name",
+              "displayName": "reviewer_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer_title",
+              "displayName": "reviewer_title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer_company",
+              "displayName": "reviewer_company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer_company_size",
+              "displayName": "reviewer_company_size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "competitor_product",
+              "displayName": "competitor_product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "pain_category",
+              "displayName": "pain_category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "pain_summary",
+              "displayName": "pain_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence_score",
+              "displayName": "confidence_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "total_score",
+              "displayName": "total_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "tier",
+              "displayName": "tier",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "review_text",
+              "displayName": "review_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "drafted_email",
+              "displayName": "drafted_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "identity_issue",
+              "displayName": "identity_issue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        160,
+        592
+      ],
+      "id": "353e02b2-064f-4378-becc-27825cc35ee8",
+      "name": "log insufficient identity",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "5IUdjQ5KqhYoiOC5",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.clay.com/v3/sources/webhook/pull-in-data-from-a-webhook-651e9ab9-b5ed-4f77-a13a-8504f5305bf2",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        160,
+        320
+      ],
+      "id": "629d9cf0-c17c-45a6-b5b4-e9c53c7f26a9",
+      "name": "send eligible lead to clay",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const originalLead = $('route by confidence score.').item.json;\n\nreturn {\n  json: {\n    ...originalLead,\n    human_review_approved: $json.data.approved,\n    human_review_responded_at: $json.data.respondedAt\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        720
+      ],
+      "id": "146365e7-7bd9-41d8-9bd2-5b1a29106474",
+      "name": "Restore Reviewed Lead"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "clay-enrichment-result",
+        "options": {
+          "responseCode": {
+            "values": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1120,
+        1152
+      ],
+      "id": "fbd44412-535c-4bba-a805-c0fd85eb6049",
+      "name": "receive clay enrichment result",
+      "webhookId": "328f2778-73af-45d1-9a34-cc9eaeffeff9"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(item => {\n  const body = item.json.body ?? item.json;\n  const nameParts = String(body.reviewer_name || '')\n    .trim()\n    .split(/\\s+/)\n    .filter(Boolean);\n\n  return {\n    json: {\n      ...body,\n      email: String(body.email || '').trim(),\n      domain: String(body.domain || '')\n        .trim()\n        .replace(/^https?:\\/\\//, '')\n        .replace(/^www\\./, '')\n        .replace(/\\/.*$/, ''),\n      first_name: body.first_name || nameParts[0] || '',\n      last_name: body.last_name || nameParts.slice(1).join(' ')\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -896,
+        1152
+      ],
+      "id": "f5f40851-79ff-42b0-928e-61929b654908",
+      "name": "Normalize Clay Response."
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1152,
+        64
+      ],
+      "id": "b2a79584-2f2d-4d37-b0c7-a2e9fac712b9",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "content": "# Phase 1: Data Collection & Analysis",
+        "height": 320,
+        "width": 1584,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1232,
+        -96
+      ],
+      "typeVersion": 1,
+      "id": "a03155c8-d081-4ada-91bc-b3b503442452",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "# Phase 2: Qualification, Review & Enrichment Routing",
+        "height": 640,
+        "width": 1552,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1184,
+        288
+      ],
+      "typeVersion": 1,
+      "id": "94817ec7-fe9f-4d37-9a90-70b7dd8954a6",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "# Phase 3: Enrichment Results & CRM Routing",
+        "height": 464,
+        "width": 1024,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1216,
+        960
+      ],
+      "typeVersion": 1,
+      "id": "ca358fa8-e97e-437c-8a94-85bd07430328",
+      "name": "Sticky Note1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "load competitor url.": {
+      "main": [
+        [
+          {
+            "node": "fetch G2 reviews.",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch G2 reviews.": {
+      "main": [
+        [
+          {
+            "node": "Remove Duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "filter discard leads.": {
+      "main": [
+        [
+          {
+            "node": "route by confidence score.",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "route by confidence score.": {
+      "main": [
+        [
+          {
+            "node": "check enrichment eligibility",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "send low confidence alert.",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check email found.": {
+      "main": [
+        [
+          {
+            "node": "create hubspot contact.",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "log email not found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "send low confidence alert.": {
+      "main": [
+        [
+          {
+            "node": "Restore Reviewed Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "route slack decision.": {
+      "main": [
+        [
+          {
+            "node": "check enrichment eligibility",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "log to discard sheet.",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wake Render": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "load competitor url.",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove Duplicates": {
+      "main": [
+        [
+          {
+            "node": "Send Review for Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Review for Analysis": {
+      "main": [
+        [
+          {
+            "node": "filter discard leads.",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check enrichment eligibility": {
+      "main": [
+        [
+          {
+            "node": "send eligible lead to clay",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "log insufficient identity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Reviewed Lead": {
+      "main": [
+        [
+          {
+            "node": "route slack decision.",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "receive clay enrichment result": {
+      "main": [
+        [
+          {
+            "node": "Normalize Clay Response.",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Clay Response.": {
+      "main": [
+        [
+          {
+            "node": "check email found.",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Wake Render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "38d0cbd8-1939-41ea-ab85-09eac1e3648e",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "306a2bebaa8562f16b5cce173edaee51ce005cd10c8f694f49c430b59cc133af"
+  },
+  "nodeGroups": [],
+  "id": "14e6BXe138j64myL",
+  "tags": []
+}
