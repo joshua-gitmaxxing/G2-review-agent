@@ -148,6 +148,4 @@ python smoke_test.py --dry-run
 
 ## Notes
 
-- Credentials are intentionally excluded from this repository.
 - The workflow export is provided for architecture and portfolio review. Importing it requires your own n8n credentials and connected tools.
-- The workflow does not automatically send outbound messages.
