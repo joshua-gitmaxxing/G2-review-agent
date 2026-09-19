@@ -4,6 +4,9 @@ A GTM workflow that turns competitor-review signals into qualified, enrichment-r
 
 Built as a portfolio project to demonstrate a complete signal-to-pipeline system: collection, AI analysis, qualification, human review, enrichment, CRM routing, and test coverage.
 
+## Workflow
+<img width="1920" height="1080" alt="g2-system" src="https://github.com/user-attachments/assets/ebe5685b-3a86-4c9d-936c-54e309fb21db" />
+
 ## The problem
 
 Competitor reviews can reveal real friction: poor reporting, pricing concerns, onboarding issues, unreliable integrations, and other reasons a buyer may be open to an alternative.
